@@ -1,0 +1,10 @@
+## Interface: 120005
+## Title: BUSSYUI
+## Notes: Minimal "busy" status indicator — casting, channeling, combat, or ready.
+## Author: JordanEllisAU
+## Version: 1.0.0
+## SavedVariables: BUSSYUI_DB
+## X-Website: https://github.com/JordanEllisAU/BUSSYUI
+## X-License: MIT
+
+BUSSYUI.lua
