@@ -40,6 +40,7 @@ NS.label = nil       -- status label fontstring
 NS.isCasting = false
 NS.isCombat = false
 NS.gcdEnd = 0        -- GetTime() at which the current GCD finishes; 0 = none
+NS.gcdProbeID = nil  -- cached spellID used to sample the GCD (resolved once at Init)
 
 -- ---------------------------------------------------------------------------
 -- Persistence
@@ -106,33 +107,40 @@ end
 -- GCD tracking
 -- ---------------------------------------------------------------------------
 
--- Sample a known GCD spell (Arcane Torrent / global slot 1) to detect the GCD.
+-- Sample the GCD using the cached probe spellID.
 -- Uses C_Spell.GetSpellCooldown (modern 12.x API). Returns gcdEnd (GetTime) or 0.
+-- SpellCooldownInfo fields (warcraft.wiki.gg, 12.0.5): startTime, duration,
+-- isEnabled (boolean), isActive (boolean). NOT start/enable.
 function NS.SampleGcd()
-    -- Slot 1 of the player's spellbook always participates in the GCD.
-    -- C_Spell.GetSpellCooldown on a known spell returns start, duration, enable.
-    -- We probe the first known spell id from the general spellbook tab.
-    local spellID = NS.GetFirstKnownSpellID()
-    if not spellID then return 0 end
-    local cd = C_Spell.GetSpellCooldown(spellID)
+    if not NS.gcdProbeID then return 0 end
+    local cd = C_Spell.GetSpellCooldown(NS.gcdProbeID)
     if not cd then return 0 end
-    -- cd.start, cd.duration, cd.enable — enable==1 means a real cooldown line.
-    if cd.duration and cd.duration > 0 and cd.duration <= 1.5 and cd.enable == 1 then
-        return (cd.start or 0) + (cd.duration or 0)
+    -- GCD is <= 1.5s; real cooldowns are longer. isEnabled filters "on hold" CDs.
+    if cd.duration and cd.duration > 0 and cd.duration <= 1.5 and cd.isEnabled then
+        return (cd.startTime or 0) + cd.duration
     end
     return 0
 end
 
--- Return the spellID of the first known spell in the player's general spellbook,
--- or nil if none. Used only as a GCD probe.
-function NS.GetFirstKnownSpellID()
-    local bookType = "general"
-    local numSlots = C_SpellBook.GetNumSpellBookSkills(bookType)
-    if not numSlots then return nil end
-    for i = 1, numSlots do
-        local info = C_SpellBook.GetSpellBookSkillLineInfo(i)
-        if info and info.spellID and C_SpellBook.IsSpellKnown(info.spellID) then
-            return info.spellID
+-- Resolve a spellID to use as the GCD probe by scanning the player spellbook.
+-- Enumerates skill lines, then slots within each line via GetSpellBookItemInfo.
+-- Returns a spellID (number) or nil if no suitable spell is found.
+-- Called once at Init; result cached in NS.gcdProbeID.
+function NS.ResolveGcdProbeSpellID()
+    local numLines = C_SpellBook.GetNumSpellBookSkillLines()
+    if not numLines then return nil end
+    local bank = Enum.SpellBookSpellBank.Player -- 0
+    for lineIdx = 1, numLines do
+        local line = C_SpellBook.GetSpellBookSkillLineInfo(lineIdx)
+        if line and line.numSpellBookItems and line.numSpellBookItems > 0 then
+            local first = (line.itemIndexOffset or 0) + 1
+            local last = first + line.numSpellBookItems - 1
+            for slot = first, last do
+                local info = C_SpellBook.GetSpellBookItemInfo(slot, bank)
+                if info and info.spellID and C_SpellBook.IsSpellKnown(info.spellID) then
+                    return info.spellID
+                end
+            end
         end
     end
     return nil
@@ -308,8 +316,6 @@ local function SlashHandler(msg)
         return
     end
     local cmd = string.lower(parts[1])
-    local args = { select(2, unpack(parts)) } -- unused but reserved for future
-    -- Rebuild args as a proper list (unpack above is a no-op guard).
     local argList = {}
     for i = 2, #parts do argList[#argList + 1] = parts[i] end
 
@@ -335,7 +341,9 @@ function NS.Init()
     BUSSYUI_DB = NS.db -- promote merged table so SavedVariables persists it
 
     NS.BuildUI()
-    NS.Render()
+
+    -- Resolve and cache the GCD probe spellID once (O(n) spellbook scan).
+    NS.gcdProbeID = NS.ResolveGcdProbeSpellID()
 
     -- Register runtime events now that db exists.
     NS.eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
@@ -354,7 +362,7 @@ function NS.Init()
     -- Seed combat state (we may have logged in mid-combat).
     NS.isCombat = UnitAffectingCombat("player")
     NS.gcdEnd = NS.SampleGcd()
-    NS.Render()
+    NS.Render() -- single render after all state is seeded
 
     Print("v" .. NS.version .. " loaded. /bussyui for commands.")
 end
