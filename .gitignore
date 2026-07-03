@@ -1,0 +1,5 @@
+# WoW addon build artifacts
+*.zip
+*.toc.backup
+/.luarc.json
+/.vscode/
